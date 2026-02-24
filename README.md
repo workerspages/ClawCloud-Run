@@ -9,6 +9,7 @@
 - **🔒 安全验证支持**:
     - 支持设备授权验证 (Device Verification)。
     - 支持两步验证 (2FA)，包括：
+        - **TOTP 自动验证码**（推荐）：配置 `GH_TOTP_SECRET` 后全自动处理，无需手动操作。
         - GitHub 移动应用批准。
         - 通过 Telegram 机器人发送验证码 (`/code 123456`)。
 - **🔔 实时通知**: 通过 Telegram 机器人发送登录结果、设备验证和两步验证请求。
@@ -26,10 +27,20 @@
 | `GH_USERNAME`     | **是**   | 你的 GitHub 用户名。                                                                                                                |
 | `GH_PASSWORD`     | **是**   | 你的 GitHub 密码。                                                                                                                |
 | `GH_SESSION`      | **是**       | GitHub 的 `user_session` Cookie 值。首次运行时可不填，脚本会自动获取并提示你更新。如果配置了 `REPO_TOKEN`，脚本可自动更新此值。 |
+| `GH_TOTP_SECRET`  | **推荐** | GitHub 2FA 的 TOTP Secret（Base32 字符串）。配置后遇到 2FA 自动填入验证码，**彻底免去手动操作**。获取方法见下方说明。 |
 | `TG_BOT_TOKEN`    | **是**        | 用于发送通知的 Telegram Bot Token。如果你需要接收登录状态或进行两步验证，则必须配置。                                              |
 | `TG_CHAT_ID`      | **是**        | 你的 Telegram User ID 或 Channel ID，用于接收机器人消息。                                                                        |
 | `REPO_TOKEN`      | **是**       | GitHub Personal Access Token。如果希望脚本自动更新 `GH_SESSION`，需要提供此 Token。请授予 `repo` 权限。                            |
 | `TWO_FACTOR_WAIT` | 否       | 两步验证的等待时间（秒），默认为 `120`。                                                                                              |
+
+### 🔑 如何获取 TOTP Secret
+
+1. 进入 GitHub → **Settings** → **Password and authentication**
+2. 在 Two-factor authentication 中点击 **Authenticator app** 的 Configure（或 Reconfigure）
+3. 在设置页面中点击 **"setup key"** 链接，复制显示的 Base32 字符串（如 `JBSWY3DPEHPK3PXP`）
+4. 将该字符串添加为仓库 Secret `GH_TOTP_SECRET`
+
+> ⚠️ 同时请用该 Secret 在 Google Authenticator 等 App 中添加条目，以备手动登录时使用。
 
 
 ## ▶️ 如何运行

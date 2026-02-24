@@ -180,6 +180,7 @@ class AutoLogin:
         self.username = os.environ.get('GH_USERNAME')
         self.password = os.environ.get('GH_PASSWORD')
         self.gh_session = os.environ.get('GH_SESSION', '').strip()
+        self.totp_secret = os.environ.get('GH_TOTP_SECRET', '').strip()
         self.tg = Telegram()
         self.secret = SecretUpdater()
         self.shots = []
@@ -189,6 +190,12 @@ class AutoLogin:
         # 区域相关
         self.detected_region = 'eu-central-1'  # 检测到的区域，如 "ap-southeast-1"
         self.region_base_url = 'https://eu-central-1.run.claw.cloud'  # 检测到的区域基础 URL
+        
+        # TOTP 状态
+        if self.totp_secret:
+            print("✅ TOTP 自动验证已启用（遇到 2FA 将自动填入验证码）")
+        else:
+            print("⚠️ TOTP 未配置（遇到 2FA 将通过 Telegram 手动输入）")
         
     def log(self, msg, level="INFO"):
         icons = {"INFO": "ℹ️", "SUCCESS": "✅", "ERROR": "❌", "WARN": "⚠️", "STEP": "🔹"}
@@ -385,35 +392,44 @@ class AutoLogin:
         self.tg.send("❌ <b>两步验证超时</b>")
         return False
     
-    def handle_2fa_code_input(self, page):
-        """处理 TOTP 验证码输入（通过 Telegram 发送 /code 123456）"""
-        self.log("需要输入验证码", "WARN")
-        shot = self.shot(page, "两步验证_code")
-
+    def generate_totp(self):
+        """使用 TOTP Secret 自动生成 6 位验证码"""
+        if not self.totp_secret:
+            return None
+        try:
+            import pyotp
+            totp = pyotp.TOTP(self.totp_secret)
+            code = totp.now()
+            self.log("已通过 TOTP 自动生成验证码", "SUCCESS")
+            return code
+        except Exception as e:
+            self.log(f"TOTP 生成失败: {e}", "ERROR")
+            return None
+    
+    def switch_to_authenticator_app(self, page):
+        """尝试切换到 Authenticator App 验证码输入页面"""
         # 如果是 Security Key (webauthn) 页面，尝试切换到 Authenticator App
         if 'two-factor/webauthn' in page.url:
             self.log("检测到 Security Key 页面，尝试切换...", "INFO")
             try:
-                # 点击 "More options"
                 more_options_button = page.locator('button:has-text("More options")').first
                 if more_options_button.is_visible(timeout=3000):
                     more_options_button.click()
                     self.log("已点击 'More options'", "SUCCESS")
-                    time.sleep(1) # 等待菜单出现
+                    time.sleep(1)
                     self.shot(page, "点击more_options后")
 
-                    # 点击 "Authenticator app"
                     auth_app_button = page.locator('button:has-text("Authenticator app")').first
                     if auth_app_button.is_visible(timeout=2000):
                         auth_app_button.click()
                         self.log("已选择 'Authenticator app'", "SUCCESS")
                         time.sleep(2)
                         page.wait_for_load_state('networkidle', timeout=15000)
-                        shot = self.shot(page, "切换到验证码输入页") # 更新截图
+                        self.shot(page, "切换到验证码输入页")
             except Exception as e:
                 self.log(f"切换验证方式时出错: {e}", "WARN")
 
-        # (保留) 先尝试点击"Use an authentication app"或类似按钮（如果在 mobile 页面）
+        # 尝试点击 "Use an authentication app" 等按钮（如果在 mobile 页面）
         try:
             more_options = [
                 'a:has-text("Use an authentication app")',
@@ -430,25 +446,41 @@ class AutoLogin:
                         time.sleep(2)
                         page.wait_for_load_state('networkidle', timeout=15000)
                         self.log("已切换到验证码输入页面", "SUCCESS")
-                        shot = self.shot(page, "两步验证_code_切换后")
+                        self.shot(page, "两步验证_code_切换后")
                         break
                 except:
                     pass
         except:
             pass
+    
+    def handle_2fa_code_input(self, page):
+        """处理 TOTP 验证码输入（优先自动生成，回退到 Telegram 手动输入）"""
+        self.log("需要输入验证码", "WARN")
+        self.shot(page, "两步验证_code")
 
-        # 发送提示并等待验证码
-        self.tg.send(f"""🔐 <b>需要验证码登录</b>
+        # 切换到 Authenticator App 输入页面
+        self.switch_to_authenticator_app(page)
+
+        # 获取验证码：优先 TOTP 自动生成，回退到 Telegram
+        code = self.generate_totp()
+        
+        if code:
+            self.log("使用 TOTP 自动生成验证码", "SUCCESS")
+            self.tg.send("🔐 使用 TOTP 自动填入验证码...")
+        else:
+            # 回退到 Telegram 手动输入
+            shot = self.shot(page, "两步验证_等待输入")
+            self.tg.send(f"""🔐 <b>需要验证码登录</b>
 
 用户{self.username}正在登录，请在 Telegram 里发送：
 <code>/code 你的6位验证码</code>
 
 等待时间：{TWO_FACTOR_WAIT} 秒""")
-        if shot:
-            self.tg.photo(shot, "两步验证页面")
+            if shot:
+                self.tg.photo(shot, "两步验证页面")
 
-        self.log(f"等待验证码（{TWO_FACTOR_WAIT}秒）...", "WARN")
-        code = self.tg.wait_code(timeout=TWO_FACTOR_WAIT)
+            self.log(f"等待验证码（{TWO_FACTOR_WAIT}秒）...", "WARN")
+            code = self.tg.wait_code(timeout=TWO_FACTOR_WAIT)
 
         if not code:
             self.log("等待验证码超时", "ERROR")
@@ -573,27 +605,26 @@ class AutoLogin:
             self.log("需要两步验证！", "WARN")
             self.shot(page, "两步验证")
             
-            # GitHub Mobile：等待你在手机上批准
-            if 'two-factor/mobile' in page.url:
-                if not self.wait_two_factor_mobile(page):
-                    return False
-                # 通过后等页面稳定
-                try:
-                    page.wait_for_load_state('networkidle', timeout=30000)
-                    time.sleep(2)
-                except:
-                    pass
-            
-            else:
-                # 其它两步验证方式（TOTP/恢复码等），尝试通过 Telegram 输入验证码
+            # 如果配置了 TOTP，无论 mobile 还是其他页面都优先自动填码
+            if self.totp_secret:
+                self.log("已配置 TOTP，切换到验证码自动填入", "INFO")
                 if not self.handle_2fa_code_input(page):
                     return False
-                # 通过后等页面稳定
-                try:
-                    page.wait_for_load_state('networkidle', timeout=30000)
-                    time.sleep(2)
-                except:
-                    pass
+            elif 'two-factor/mobile' in page.url:
+                # 未配置 TOTP 时，GitHub Mobile 等待手机批准
+                if not self.wait_two_factor_mobile(page):
+                    return False
+            else:
+                # 未配置 TOTP，其它方式通过 Telegram 输入验证码
+                if not self.handle_2fa_code_input(page):
+                    return False
+            
+            # 通过后等页面稳定
+            try:
+                page.wait_for_load_state('networkidle', timeout=30000)
+                time.sleep(2)
+            except:
+                pass
         
         # 错误
         try:
